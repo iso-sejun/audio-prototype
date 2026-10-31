@@ -51,6 +51,23 @@ audio {
   margin: 8px 0;
 }
 
+.waveform {
+  margin-top: 8px;
+  min-height: 96px;
+  touch-action: pan-y; /* let vertical page scroll through, keep horizontal drags for seeking */
+}
+
+/* trigger marker labels drawn by the regions plugin */
+.waveform ::part(region-content) {
+  font-size: 11px;
+  padding: 1px 4px;
+  background: #f59e0b;
+  color: #000;
+  border-radius: 3px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .row {
   display: flex;
   align-items: center;

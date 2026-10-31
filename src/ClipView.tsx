@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Dexie from 'dexie'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { addTrigger, db, deleteTrigger, formatTime, updateTrigger } from './db'
+import Waveform from './Waveform'
 
 const STOP_KEY = 'stopAtNext'
 
@@ -111,6 +112,13 @@ export default function ClipView({ clipId, onBack }: { clipId: string; onBack: (
     <main>
       <button onClick={onBack}>← Clips</button>
       <h1>{clip?.name}</h1>
+      <Waveform
+        audioRef={audioRef}
+        src={src}
+        triggers={triggers}
+        onMarkerClick={playFrom}
+        onMarkerMove={(id, time) => updateTrigger(id, { time })}
+      />
       <audio ref={audioRef} src={src} controls preload="auto" />
 
       <div className="row">
