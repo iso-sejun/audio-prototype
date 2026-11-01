@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/plugins/regions'
-import type { Trigger } from './db'
+import { isSilent, type Trigger } from './db'
 
 interface Props {
   audioRef: RefObject<HTMLAudioElement | null>
@@ -32,21 +32,24 @@ export default function Waveform(props: Props) {
 
   useEffect(() => {
     const media = audioRef.current
-    if (!src || !peaks?.length || !duration || !media || !containerRef.current) return
+    if (!src || isSilent(peaks) || !duration || !media || !containerRef.current) return
     const regions = RegionsPlugin.create()
     const ws = WaveSurfer.create({
       container: containerRef.current,
       media,
       url: src,
-      peaks: [peaks],
+      peaks: [peaks!],
       duration,
       height: 96,
-      waveColor: '#8888',
+      // Plain 6-digit hex only: these go straight to canvas fillStyle, and a value
+      // the browser rejects leaves the default black (invisible on a dark page).
+      waveColor: '#8a8f98',
       progressColor: '#3b6ef5',
       cursorColor: '#3b6ef5',
       barWidth: 2,
       barGap: 1,
       barRadius: 2,
+      barMinHeight: 1,
       dragToSeek: true,
       plugins: [regions],
     })
@@ -85,7 +88,7 @@ export default function Waveform(props: Props) {
 
   return (
     <div ref={containerRef} className="waveform">
-      {(!peaks?.length || renderError) && (
+      {(isSilent(peaks) || renderError) && (
         <p className="muted small">
           {error || renderError
             ? `Waveform unavailable: ${error || renderError}`

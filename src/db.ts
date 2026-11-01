@@ -58,37 +58,19 @@ type WebkitWindow = typeof window & {
   webkitAudioContext?: typeof AudioContext
 }
 
-// Decodes with the most conservative Web Audio setup: an offline context at 44.1 kHz
-// (accepted everywhere, needs no user gesture), falling back to a default-rate
-// AudioContext, and the callback form of decodeAudioData (older Safari lacks the
-// promise form).
-async function decodeBlob(blob: Blob): Promise<AudioBuffer> {
-  const data = await blob.arrayBuffer()
-  const w = window as WebkitWindow
-  const Offline = window.OfflineAudioContext ?? w.webkitOfflineAudioContext
-  const Online = window.AudioContext ?? w.webkitAudioContext
-  let ctx: BaseAudioContext
-  try {
-    ctx = new Offline!(1, 1, 44100)
-  } catch {
-    ctx = new Online!()
-  }
-  try {
-    return await new Promise<AudioBuffer>((resolve, reject) => {
-      const p = ctx.decodeAudioData(data, resolve, (e) =>
-        reject(e ?? new Error('Could not decode audio')),
-      )
-      p?.catch?.(reject)
-    })
-  } finally {
-    if (ctx instanceof AudioContext) ctx.close().catch(() => {})
-  }
+// Callback form of decodeAudioData: older Safari lacks the promise form.
+function decodeWith(ctx: BaseAudioContext, data: ArrayBuffer) {
+  return new Promise<AudioBuffer>((resolve, reject) => {
+    const p = ctx.decodeAudioData(data, resolve, (e) =>
+      reject(e ?? new Error('Could not decode audio')),
+    )
+    p?.catch?.(reject)
+  })
 }
 
-// Reduces the decoded audio to `buckets` peak values so the waveform can be drawn
-// instantly from IndexedDB, without decoding the file again.
-export async function computeWaveform(blob: Blob, buckets = 1000) {
-  const buffer = await decodeBlob(blob)
+// Reduces decoded audio to `buckets` peak values (0..1) so the waveform can be
+// drawn instantly from IndexedDB, without decoding the file again.
+function peaksFromBuffer(buffer: AudioBuffer, buckets: number) {
   const channels = Array.from({ length: buffer.numberOfChannels }, (_, i) =>
     buffer.getChannelData(i),
   )
@@ -108,17 +90,43 @@ export async function computeWaveform(blob: Blob, buckets = 1000) {
     if (peak > max) max = peak
   }
   const scale = max > 0 ? 1 / max : 1
-  return {
-    peaks: peaks.map((p) => Math.round(p * scale * 1000) / 1000),
-    duration: buffer.duration,
+  return peaks.map((p) => Math.round(p * scale * 1000) / 1000)
+}
+
+export const isSilent = (peaks?: number[]) => !peaks?.some((p) => p > 0)
+
+// Tries an offline context at 44.1 kHz first (accepted everywhere, needs no user
+// gesture), then a default-rate AudioContext. A decode that "succeeds" but yields
+// only silence counts as a failure, since some WebKit versions have done that.
+export async function computeWaveform(blob: Blob, buckets = 1000) {
+  const w = window as WebkitWindow
+  const Offline = window.OfflineAudioContext ?? w.webkitOfflineAudioContext
+  const Online = window.AudioContext ?? w.webkitAudioContext
+  const attempts = [() => new Offline!(1, 1, 44100), () => new Online!()]
+  let lastError: unknown = new Error('Web Audio is not supported')
+  for (const makeContext of attempts) {
+    let ctx: BaseAudioContext | undefined
+    try {
+      ctx = makeContext()
+      // decodeAudioData detaches the buffer, so each attempt needs a fresh copy
+      const buffer = await decodeWith(ctx, await blob.arrayBuffer())
+      const peaks = peaksFromBuffer(buffer, buckets)
+      if (isSilent(peaks)) throw new Error('decoded audio was silent')
+      return { peaks, duration: buffer.duration }
+    } catch (e) {
+      lastError = e
+    } finally {
+      if (ctx instanceof AudioContext) ctx.close().catch(() => {})
+    }
   }
+  throw lastError
 }
 
 // Fills in the waveform for clips imported before peaks were stored, or whose
-// decode failed at import time.
+// decode failed or came out silent at import time.
 export async function ensureWaveform(clipId: string, blob: Blob) {
   const clip = await db.clips.get(clipId)
-  if (!clip || clip.peaks?.length) return
+  if (!clip || !isSilent(clip.peaks)) return
   const { peaks, duration } = await computeWaveform(blob)
   await db.clips.update(clipId, { peaks, duration: clip.duration || duration })
 }

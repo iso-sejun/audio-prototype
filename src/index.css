@@ -54,6 +54,8 @@ audio {
 .waveform {
   margin-top: 8px;
   min-height: 96px;
+  background: rgba(136, 136, 136, 0.08);
+  border-radius: 6px;
   touch-action: pan-y; /* let vertical page scroll through, keep horizontal drags for seeking */
 }
 
