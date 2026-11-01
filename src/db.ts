@@ -58,15 +58,22 @@ type WebkitWindow = typeof window & {
   webkitAudioContext?: typeof AudioContext
 }
 
-// Callback form of decodeAudioData: older Safari lacks the promise form.
-function decodeWith(ctx: BaseAudioContext, data: ArrayBuffer) {
+// Uses both the callback form (older Safari lacks the promise form) and the
+// promise. Safari can call the error callback with null, so in that case give the
+// promise a moment to reject with the real DOMException before falling back.
+function decodeWith(ctx: BaseAudioContext, data: ArrayBuffer, useCallbacks = true) {
   return new Promise<AudioBuffer>((resolve, reject) => {
-    const p = ctx.decodeAudioData(data, resolve, (e) =>
-      reject(e ?? new Error('Could not decode audio')),
-    )
-    p?.catch?.(reject)
+    const p = useCallbacks
+      ? ctx.decodeAudioData(data, resolve, (e) =>
+          e ? reject(e) : setTimeout(() => reject(new Error('no error details')), 100),
+        )
+      : ctx.decodeAudioData(data)
+    p?.then?.(resolve, reject)
   })
 }
+
+const describe = (e: unknown) =>
+  e instanceof Error ? [e.name, e.message].filter(Boolean).join(': ') : String(e)
 
 // Reduces decoded audio to `buckets` peak values (0..1) so the waveform can be
 // drawn instantly from IndexedDB, without decoding the file again.
@@ -95,31 +102,44 @@ function peaksFromBuffer(buffer: AudioBuffer, buckets: number) {
 
 export const isSilent = (peaks?: number[]) => !peaks?.some((p) => p > 0)
 
-// Tries an offline context at 44.1 kHz first (accepted everywhere, needs no user
-// gesture), then a default-rate AudioContext. A decode that "succeeds" but yields
-// only silence counts as a failure, since some WebKit versions have done that.
+// Tries several decoders in turn, since iOS Safari has been seen to fail some of
+// them on files it plays fine. A decode that "succeeds" but yields only silence
+// counts as a failure. If all fail, the error lists what each one did, plus the
+// file's type, size and first bytes, so the cause can be read off the screen.
 export async function computeWaveform(blob: Blob, buckets = 1000) {
   const w = window as WebkitWindow
   const Offline = window.OfflineAudioContext ?? w.webkitOfflineAudioContext
   const Online = window.AudioContext ?? w.webkitAudioContext
-  const attempts = [() => new Offline!(1, 1, 44100), () => new Online!()]
-  let lastError: unknown = new Error('Web Audio is not supported')
-  for (const makeContext of attempts) {
+  const data = await blob.arrayBuffer()
+  const head = Array.from(new Uint8Array(data, 0, Math.min(8, data.byteLength)))
+  const magic = head.map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join('')
+  const about = `${blob.type || 'no type'}, ${(data.byteLength / 1e6).toFixed(1)} MB, starts "${magic}"`
+  if (!data.byteLength) throw new Error(`stored audio is empty (${about})`)
+
+  const attempts: [string, () => BaseAudioContext, boolean][] = [
+    ['offline', () => new Offline!(1, 1, 44100), true],
+    ['context', () => new Online!(), true],
+    ['context/promise', () => new Online!(), false],
+  ]
+  const results: string[] = []
+  for (const [label, makeContext, useCallbacks] of attempts) {
     let ctx: BaseAudioContext | undefined
     try {
       ctx = makeContext()
-      // decodeAudioData detaches the buffer, so each attempt needs a fresh copy
-      const buffer = await decodeWith(ctx, await blob.arrayBuffer())
+      // decodeAudioData detaches the buffer it is given, so pass each a copy
+      const buffer = await decodeWith(ctx, data.slice(0), useCallbacks)
       const peaks = peaksFromBuffer(buffer, buckets)
-      if (isSilent(peaks)) throw new Error('decoded audio was silent')
-      return { peaks, duration: buffer.duration }
+      if (!isSilent(peaks)) return { peaks, duration: buffer.duration }
+      results.push(
+        `${label}: silent (${buffer.duration.toFixed(1)}s, ${buffer.sampleRate} Hz, ${buffer.numberOfChannels}ch)`,
+      )
     } catch (e) {
-      lastError = e
+      results.push(`${label}: ${describe(e)}`)
     } finally {
       if (ctx instanceof AudioContext) ctx.close().catch(() => {})
     }
   }
-  throw lastError
+  throw new Error(`${results.join('; ')} (${about})`)
 }
 
 // Fills in the waveform for clips imported before peaks were stored, or whose
