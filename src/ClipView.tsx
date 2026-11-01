@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Dexie from 'dexie'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { addTrigger, db, deleteTrigger, formatTime, updateTrigger } from './db'
+import { addTrigger, db, deleteTrigger, ensureWaveform, formatTime, updateTrigger } from './db'
 import Waveform from './Waveform'
 
 const STOP_KEY = 'stopAtNext'
@@ -20,6 +20,7 @@ export default function ClipView({ clipId, onBack }: { clipId: string; onBack: (
   const stopAtRef = useRef<number | null>(null)
   const [src, setSrc] = useState<string>()
   const [missing, setMissing] = useState(false)
+  const [waveError, setWaveError] = useState<string>()
   const [stopAtNext, setStopAtNext] = useState(() => {
     try {
       return localStorage.getItem(STOP_KEY) === '1'
@@ -34,6 +35,9 @@ export default function ClipView({ clipId, onBack }: { clipId: string; onBack: (
       if (!row) return setMissing(true)
       url = URL.createObjectURL(row.blob)
       setSrc(url)
+      ensureWaveform(clipId, row.blob).catch((e: unknown) =>
+        setWaveError(e instanceof Error ? e.message || e.name : String(e)),
+      )
     })
     return () => {
       if (url) URL.revokeObjectURL(url)
@@ -115,6 +119,9 @@ export default function ClipView({ clipId, onBack }: { clipId: string; onBack: (
       <Waveform
         audioRef={audioRef}
         src={src}
+        peaks={clip?.peaks}
+        duration={clip?.duration}
+        error={waveError}
         triggers={triggers}
         onMarkerClick={playFrom}
         onMarkerMove={(id, time) => updateTrigger(id, { time })}

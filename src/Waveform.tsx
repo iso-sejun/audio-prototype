@@ -6,6 +6,9 @@ import type { Trigger } from './db'
 interface Props {
   audioRef: RefObject<HTMLAudioElement | null>
   src?: string
+  peaks?: number[]
+  duration?: number
+  error?: string
   triggers?: Trigger[]
   onMarkerClick: (index: number) => void
   onMarkerMove: (id: string, time: number) => void
@@ -13,23 +16,30 @@ interface Props {
 
 // Draws the clip's waveform on top of the existing <audio> element, so playback,
 // seeking and the progress overlay all stay in sync with the native controls.
-export default function Waveform({ audioRef, src, triggers, onMarkerClick, onMarkerMove }: Props) {
+// The waveform comes from precomputed peaks: passing peaks and duration means
+// wavesurfer never fetches or decodes the file itself, and never waits for the
+// media element's metadata (which iOS may not load until the user taps play).
+export default function Waveform(props: Props) {
+  const { audioRef, src, peaks, duration, error, triggers } = props
   const containerRef = useRef<HTMLDivElement>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create>>(null)
   const [ready, setReady] = useState(false)
-  const callbacks = useRef({ onMarkerClick, onMarkerMove })
+  const [renderError, setRenderError] = useState<string>()
+  const callbacks = useRef(props)
   useEffect(() => {
-    callbacks.current = { onMarkerClick, onMarkerMove }
+    callbacks.current = props
   })
 
   useEffect(() => {
     const media = audioRef.current
-    if (!src || !media || !containerRef.current) return
+    if (!src || !peaks?.length || !duration || !media || !containerRef.current) return
     const regions = RegionsPlugin.create()
     const ws = WaveSurfer.create({
       container: containerRef.current,
       media,
       url: src,
+      peaks: [peaks],
+      duration,
       height: 96,
       waveColor: '#8888',
       progressColor: '#3b6ef5',
@@ -42,6 +52,7 @@ export default function Waveform({ audioRef, src, triggers, onMarkerClick, onMar
     })
     regionsRef.current = regions
     ws.on('decode', () => setReady(true))
+    ws.on('error', (e) => setRenderError(e.message || String(e)))
     regions.on('region-clicked', (region, e) => {
       e.stopPropagation() // don't also seek to where the marker label was tapped
       callbacks.current.onMarkerClick(Number(region.id.split(':')[1]))
@@ -54,7 +65,7 @@ export default function Waveform({ audioRef, src, triggers, onMarkerClick, onMar
       regionsRef.current = null
       ws.destroy()
     }
-  }, [src, audioRef])
+  }, [src, peaks, duration, audioRef])
 
   useEffect(() => {
     const regions = regionsRef.current
@@ -72,5 +83,15 @@ export default function Waveform({ audioRef, src, triggers, onMarkerClick, onMar
     })
   }, [triggers, ready])
 
-  return <div ref={containerRef} className="waveform" />
+  return (
+    <div ref={containerRef} className="waveform">
+      {(!peaks?.length || renderError) && (
+        <p className="muted small">
+          {error || renderError
+            ? `Waveform unavailable: ${error || renderError}`
+            : 'Loading waveform…'}
+        </p>
+      )}
+    </div>
+  )
 }
