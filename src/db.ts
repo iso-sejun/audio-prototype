@@ -122,23 +122,40 @@ export async function computeWaveform(blob: Blob, buckets = 1000) {
     ['context/promise', () => new Online!(), false],
   ]
   const results: string[] = []
-  for (const [label, makeContext, useCallbacks] of attempts) {
-    let ctx: BaseAudioContext | undefined
-    try {
-      ctx = makeContext()
-      // decodeAudioData detaches the buffer it is given, so pass each a copy
-      const buffer = await decodeWith(ctx, data.slice(0), useCallbacks)
-      const peaks = peaksFromBuffer(buffer, buckets)
-      if (!isSilent(peaks)) return { peaks, duration: buffer.duration }
-      results.push(
-        `${label}: silent (${buffer.duration.toFixed(1)}s, ${buffer.sampleRate} Hz, ${buffer.numberOfChannels}ch)`,
-      )
-    } catch (e) {
-      results.push(`${label}: ${describe(e)}`)
-    } finally {
-      if (ctx instanceof AudioContext) ctx.close().catch(() => {})
+  const tryDecoders = async (source: ArrayBuffer, prefix: string) => {
+    for (const [label, makeContext, useCallbacks] of attempts) {
+      let ctx: BaseAudioContext | undefined
+      try {
+        ctx = makeContext()
+        // decodeAudioData detaches the buffer it is given, so pass each a copy
+        const buffer = await decodeWith(ctx, source.slice(0), useCallbacks)
+        const peaks = peaksFromBuffer(buffer, buckets)
+        if (!isSilent(peaks)) return { peaks, duration: buffer.duration }
+        results.push(
+          `${prefix}${label}: silent (${buffer.duration.toFixed(1)}s, ${buffer.sampleRate} Hz, ${buffer.numberOfChannels}ch)`,
+        )
+      } catch (e) {
+        results.push(`${prefix}${label}: ${describe(e)}`)
+      } finally {
+        if (ctx instanceof AudioContext) ctx.close().catch(() => {})
+      }
     }
   }
+
+  // Videos (.mov/.mp4) play fine but Safari won't decode them, so for MP4-family
+  // files decode just the extracted audio track first.
+  // The extractor (and its MP4 parser) is loaded only when such a file shows up.
+  if (magic.slice(4, 8) === 'ftyp') {
+    try {
+      const { extractAacAsAdts } = await import('./extractAudio')
+      const result = await tryDecoders(await extractAacAsAdts(data), 'extracted ')
+      if (result) return result
+    } catch (e) {
+      results.push(`extract: ${describe(e)}`)
+    }
+  }
+  const result = await tryDecoders(data, '')
+  if (result) return result
   throw new Error(`${results.join('; ')} (${about})`)
 }
 
