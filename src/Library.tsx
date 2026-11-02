@@ -23,7 +23,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
     setBusy(true)
     const probe = document.createElement('audio')
     for (const file of Array.from(files)) {
-      if (file.type && !probe.canPlayType(file.type)) {
+      if (file.type.startsWith('audio/') && !probe.canPlayType(file.type)) {
         alert(`"${file.name}" (${file.type}) may not play in this browser.`)
       }
       await importClip(file)
@@ -38,7 +38,7 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
         {busy ? 'Importing…' : '+ Upload audio'}
         <input
           type="file"
-          accept="audio/*"
+          accept="audio/*,video/*"
           multiple
           hidden
           disabled={busy}

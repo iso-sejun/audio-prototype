@@ -168,22 +168,48 @@ export async function ensureWaveform(clipId: string, blob: Blob) {
   await db.clips.update(clipId, { peaks, duration: clip.duration || duration })
 }
 
+// Videos are stored as just their audio track (an .m4a), typically a few
+// percent of the original size. Returns undefined for audio files, or if the
+// video's audio can't be extracted (the whole file is kept then).
+async function audioOnly(blob: Blob): Promise<Blob | undefined> {
+  if (!blob.type.startsWith('video/')) return
+  try {
+    const { extractAacAsM4a } = await import('./extractAudio')
+    return new Blob([await extractAacAsM4a(await blob.arrayBuffer())], { type: 'audio/mp4' })
+  } catch {
+    return
+  }
+}
+
+// Swaps a stored video (imported before videos were converted) for its audio.
+// Returns the blob that is now stored.
+export async function shrinkClip(clipId: string, blob: Blob) {
+  const audio = await audioOnly(blob)
+  if (!audio) return blob
+  await db.transaction('rw', db.clips, db.audio, async () => {
+    await db.audio.put({ clipId, blob: audio })
+    await db.clips.update(clipId, { mimeType: audio.type, size: audio.size })
+  })
+  return audio
+}
+
 export async function importClip(file: File): Promise<string> {
   const id = crypto.randomUUID()
-  const duration = await readDuration(file)
+  const audio = (await audioOnly(file)) ?? file
+  const duration = await readDuration(audio)
   await db.transaction('rw', db.clips, db.audio, async () => {
     await db.clips.add({
       id,
       name: file.name.replace(/\.[^.]+$/, ''),
-      mimeType: file.type,
+      mimeType: audio.type,
       duration,
-      size: file.size,
+      size: audio.size,
       createdAt: Date.now(),
     })
-    await db.audio.add({ clipId: id, blob: file })
+    await db.audio.add({ clipId: id, blob: audio })
   })
   // Not fatal: the clip still plays, and the clip screen retries and reports the error.
-  await ensureWaveform(id, file).catch(() => {})
+  await ensureWaveform(id, audio).catch(() => {})
   return id
 }
 

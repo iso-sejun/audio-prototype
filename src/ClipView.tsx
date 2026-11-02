@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import Dexie from 'dexie'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { addTrigger, db, deleteTrigger, ensureWaveform, formatTime, updateTrigger } from './db'
+import {
+  addTrigger,
+  db,
+  deleteTrigger,
+  ensureWaveform,
+  formatTime,
+  shrinkClip,
+  updateTrigger,
+} from './db'
 import Waveform from './Waveform'
 
 const STOP_KEY = 'stopAtNext'
@@ -31,15 +39,19 @@ export default function ClipView({ clipId, onBack }: { clipId: string; onBack: (
 
   useEffect(() => {
     let url: string | undefined
-    db.audio.get(clipId).then((row) => {
+    let cancelled = false
+    db.audio.get(clipId).then(async (row) => {
       if (!row) return setMissing(true)
-      url = URL.createObjectURL(row.blob)
+      const blob = await shrinkClip(clipId, row.blob)
+      if (cancelled) return
+      url = URL.createObjectURL(blob)
       setSrc(url)
-      ensureWaveform(clipId, row.blob).catch((e: unknown) =>
+      ensureWaveform(clipId, blob).catch((e: unknown) =>
         setWaveError(e instanceof Error ? e.message || e.name : String(e)),
       )
     })
     return () => {
+      cancelled = true
       if (url) URL.revokeObjectURL(url)
     }
   }, [clipId])
